@@ -8,8 +8,16 @@ export interface ValidationError {
   severity: 'error' | 'warning';
 }
 
+// --- NEW: Represents an AI-suggested fix for a validation error ---
+export interface Correction {
+  rowId: string | number;
+  entityType: EntityType;
+  field: string;
+  newValue: string | number | any[];
+  reason: string; // AI's explanation for the fix
+}
+
 // Base interface for any data entity row.
-// Includes the core data and any associated validation errors.
 export interface DataRow {
   id: string | number;
   [key: string]: any;
@@ -17,7 +25,6 @@ export interface DataRow {
 }
 
 // --- Data Entity Interfaces ---
-
 export interface Client extends DataRow {
   ClientID: string;
   ClientName: string;
@@ -47,20 +54,18 @@ export interface Task extends DataRow {
   MaxConcurrent: number;
 }
 
-
 // --- Rule and Configuration Interfaces ---
-
 export type RuleType = 'coRun' | 'slotRestriction' | 'loadLimit' | 'phaseWindow' | 'patternMatch';
 
 export interface BaseRule {
-  id: string; // Unique ID for the rule
+  id: string;
   type: RuleType;
-  description: string; // User-provided or generated description
+  description: string;
 }
 
 export interface CoRunRule extends BaseRule {
   type: 'coRun';
-  taskIds: string[]; // Tasks that must run together
+  taskIds: string[];
 }
 
 export interface SlotRestrictionRule extends BaseRule {
@@ -84,23 +89,18 @@ export interface PhaseWindowRule extends BaseRule {
 
 export interface PatternMatchRule extends BaseRule {
     type: 'patternMatch';
-    pattern: string; // Regex
+    pattern: string;
     ruleTemplate: string;
     parameters: Record<string, any>;
 }
 
-// Union of all possible business rule types
 export type BusinessRule = CoRunRule | SlotRestrictionRule | LoadLimitRule | PhaseWindowRule | PatternMatchRule;
 
-// Represents the final JSON configuration to be exported.
 export interface ExportConfig {
   rules: BusinessRule[];
-  prioritization: {
-    [key: string]: number; // e.g., { PriorityLevel: 1.5, Fairness: 1.0 }
-  };
+  prioritization: { [key: string]: number; };
 }
 
-// Represents the state of the entire application data
 export interface AppData {
   clients: Client[];
   workers: Worker[];
@@ -109,10 +109,8 @@ export interface AppData {
   validationErrors: ValidationError[];
 }
 
-// Defines the type of data entity.
 export type EntityType = 'clients' | 'workers' | 'tasks';
 
-// A generic Rule type for the UI before it's cast to a specific type
 export interface Rule extends BaseRule {
     [key: string]: any;
 }
