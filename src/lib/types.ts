@@ -21,55 +21,29 @@ export interface DataRow {
 export interface Client extends DataRow {
   ClientID: string;
   ClientName: string;
-
-  // Priority level from 1 (lowest) to 5 (highest).
   PriorityLevel: number;
-
-  // Comma-separated list of TaskIDs the client has requested.
   RequestedTaskIDs: string[];
-
-  // Group tag for applying group-based rules.
   GroupTag: string;
-
-  // A flexible JSON object for any other metadata.
   AttributesJSON: Record<string, any>;
 }
 
 export interface Worker extends DataRow {
   WorkerID: string;
   WorkerName: string;
-
-  // List of skills the worker possesses.
   Skills: string[];
-
-  // Array of phase numbers when the worker is available.
   AvailableSlots: number[];
-
-  // Maximum workload the worker can handle in a single phase.
   MaxLoadPerPhase: number;
-
-  // Group tag for the worker.
   WorkerGroup: string;
-
-  // Qualification level of the worker.
   QualificationLevel: number;
 }
 
 export interface Task extends DataRow {
   TaskID: string;
-  TaskName: string;
+  TaskName:string;
   Category: string;
-
-  // The number of phases the task requires to complete.
   Duration: number;
-
-  // List of skills required to perform the task.
   RequiredSkills: string[];
-
-  // List of phase numbers during which the task is preferred to be done.
   PreferredPhases: number[];
-
-  // Maximum number of times this task can be run in parallel.
   MaxConcurrent: number;
 }
 
@@ -81,7 +55,7 @@ export type RuleType = 'coRun' | 'slotRestriction' | 'loadLimit' | 'phaseWindow'
 export interface BaseRule {
   id: string; // Unique ID for the rule
   type: RuleType;
-  description: string; // User-provided description
+  description: string; // User-provided or generated description
 }
 
 export interface CoRunRule extends BaseRule {
@@ -102,9 +76,21 @@ export interface LoadLimitRule extends BaseRule {
   maxSlotsPerPhase: number;
 }
 
-// Add other rule types as they are defined...
+export interface PhaseWindowRule extends BaseRule {
+  type: 'phaseWindow';
+  taskId: string;
+  allowedPhases: number[];
+}
 
-export type BusinessRule = CoRunRule | SlotRestrictionRule | LoadLimitRule; // Union of all rule types
+export interface PatternMatchRule extends BaseRule {
+    type: 'patternMatch';
+    pattern: string; // Regex
+    ruleTemplate: string;
+    parameters: Record<string, any>;
+}
+
+// Union of all possible business rule types
+export type BusinessRule = CoRunRule | SlotRestrictionRule | LoadLimitRule | PhaseWindowRule | PatternMatchRule;
 
 // Represents the final JSON configuration to be exported.
 export interface ExportConfig {
@@ -125,3 +111,8 @@ export interface AppData {
 
 // Defines the type of data entity.
 export type EntityType = 'clients' | 'workers' | 'tasks';
+
+// A generic Rule type for the UI before it's cast to a specific type
+export interface Rule extends BaseRule {
+    [key: string]: any;
+}

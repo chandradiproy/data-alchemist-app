@@ -2,100 +2,189 @@
 "use client";
 
 import React, { useState } from 'react';
-import { AppData, BusinessRule, CoRunRule, LoadLimitRule, PhaseWindowRule, SlotRestrictionRule } from '../lib/types';
+import toast from 'react-hot-toast';
+import { AppData, BusinessRule, CoRunRule, SlotRestrictionRule, LoadLimitRule, PhaseWindowRule, Rule } from '../lib/types';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { PlusCircle, Trash2, Wand2, Loader2 } from 'lucide-react';
-import { getAiResponse } from '../lib/ai';
-import { useToast } from './ui/use-toast';
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion';
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 interface RuleBuilderProps {
   appData: AppData;
   onRulesChange: (rules: BusinessRule[]) => void;
 }
 
+const generateRuleDescription = (rule: BusinessRule): string => {
+    // This function is now more robust to handle variations from the AI
+    switch (rule.type) {
+        case 'coRun':
+            const taskIds = (rule as CoRunRule).taskIds || (rule as any).tasks || [];
+            return `Tasks ${taskIds.join(', ')} must run together.`;
+        case 'slotRestriction':
+        case 'slot' as any: // Handle the AI's incorrect type
+            const sr = rule as SlotRestrictionRule;
+            const groupTag = sr.groupTag || (rule as any).group;
+            const minSlots = sr.minCommonSlots || (rule as any).minCount;
+            return `${sr.targetGroup || 'Group'} '${groupTag}' must have at least ${minSlots} common slots.`;
+        case 'loadLimit':
+            const ll = rule as LoadLimitRule;
+            return `Workers in group '${ll.workerGroup}' have a load limit of ${ll.maxSlotsPerPhase} per phase.`;
+        case 'phaseWindow':
+            const pw = rule as PhaseWindowRule;
+            return `Task '${pw.taskId}' can only run in phases: ${pw.allowedPhases.join(', ')}.`;
+        default:
+            return "A new rule has been created.";
+    }
+};
+
+
 export function RuleBuilder({ appData, onRulesChange }: RuleBuilderProps) {
-  const { toast } = useToast();
-  const [aiRuleText, setAiRuleText] = useState('');
-  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [naturalLanguageRule, setNaturalLanguageRule] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
   // State for manual rule inputs
-  const [coRunTasks, setCoRunTasks] = useState('');
-  const [loadLimitGroup, setLoadLimitGroup] = useState('');
-  const [loadLimitMax, setLoadLimitMax] = useState('');
-  const [phaseWindowTask, setPhaseWindowTask] = useState('');
-  const [phaseWindowPhases, setPhaseWindowPhases] = useState('');
-  const [slotRestrictionGroup, setSlotRestrictionGroup] = useState('');
-  const [slotRestrictionMin, setSlotRestrictionMin] = useState('');
+  const [newCoRunTasks, setNewCoRunTasks] = useState('');
+  const [newSlotRestriction, setNewSlotRestriction] = useState({ targetGroup: 'WorkerGroup' as 'ClientGroup' | 'WorkerGroup', groupTag: '', minCommonSlots: '' });
+  const [newLoadLimit, setNewLoadLimit] = useState({ workerGroup: '', maxSlotsPerPhase: '' });
+  const [newPhaseWindow, setNewPhaseWindow] = useState({ taskId: '', allowedPhases: '' });
 
-
-  const createRulePrompt = (naturalLanguageRule: string) => {
-    const dataSummary = {
-      clientColumns: Object.keys(appData.clients[0] || {}),
-      workerColumns: Object.keys(appData.workers[0] || {}),
-      taskColumns: Object.keys(appData.tasks[0] || {}),
-      existingTaskIds: appData.tasks.map(t => t.TaskID).slice(0, 10),
-    };
-
-    return `
-      You are an intelligent rule-parsing assistant. Your task is to convert a natural language rule into a structured JSON object.
-      The user will provide a rule in plain English. You must analyze it and create a JSON object that represents this rule.
-      The JSON object must conform to one of the following types: 'coRun', 'slotRestriction', 'loadLimit', 'phaseWindow'.
-
-      Here is the context of the available data:
-      - Clients have columns: ${dataSummary.clientColumns.join(', ')}
-      - Workers have columns: ${dataSummary.workerColumns.join(', ')}
-      - Tasks have columns: ${dataSummary.taskColumns.join(', ')}
-      - Some available Task IDs are: ${dataSummary.existingTaskIds.join(', ')}
-
-      Rule Type Schemas:
-      1. CoRunRule: { "type": "coRun", "taskIds": ["T1", "T2"], "description": "User-friendly description" }
-      2. LoadLimitRule: { "type": "loadLimit", "workerGroup": "GroupA", "maxSlotsPerPhase": 2, "description": "..." }
-      3. PhaseWindowRule: { "type": "phaseWindow", "taskId": "T15", "allowedPhases": [1, 2, 3], "description": "..." }
-      4. SlotRestrictionRule: { "type": "slotRestriction", "groupTag": "GroupA", "minCommonSlots": 2, "description": "..." }
-
-      User's rule: "${naturalLanguageRule}"
-
-      Based on the user's rule, generate ONLY the JSON object for the rule. Do not include any other text or explanations. If the rule is ambiguous or cannot be mapped to a known type, return an object like: { "error": "Rule is ambiguous or not supported." }
-    `;
-  };
 
   const handleAiRuleCreation = async () => {
-    if (!aiRuleText) return;
-    setIsAiLoading(true);
+    if (!naturalLanguageRule) {
+      toast.error("Please enter a rule description.");
+      return;
+    }
+    setIsLoading(true);
     try {
-        const prompt = createRulePrompt(aiRuleText);
-        const response = await getAiResponse(prompt);
+        // --- FIX: A much more detailed prompt for the AI ---
+        const prompt = `
+            You are an intelligent rule-parsing assistant. Convert the user's natural language rule into a structured JSON object.
+            You MUST use one of the following schemas. Do NOT invent new property names.
+
+            Rule Type Schemas:
+            1. Co-run Rule: For tasks that must run together.
+               Schema: { "type": "coRun", "taskIds": ["T1", "T2"] }
+
+            2. Slot Restriction Rule: To ensure a group has common available slots.
+               Schema: { "type": "slotRestriction", "targetGroup": "WorkerGroup", "groupTag": "GroupA", "minCommonSlots": 1 }
+               Note: 'targetGroup' should be 'WorkerGroup' if the rule mentions workers, otherwise assume 'WorkerGroup'.
+
+            3. Load Limit Rule: To limit the workload for a worker group.
+               Schema: { "type": "loadLimit", "workerGroup": "GroupB", "maxSlotsPerPhase": 2 }
+
+            4. Phase Window Rule: To restrict a task to specific phases.
+               Schema: { "type": "phaseWindow", "taskId": "T5", "allowedPhases": [1, 2, 3] }
+
+            User's rule: "${naturalLanguageRule}"
+
+            Generate ONLY the JSON object for the rule. Do not include any other text or explanations.
+        `;
+
+      const response = await fetch('/api/ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+      });
+
+      if (!response.ok) {
+        if (response.status === 429) toast.error("Too many requests. Please wait.");
+        else if (response.status >= 500) toast.error("The AI service is currently unavailable.");
+        else toast.error("An unexpected error occurred.");
+        return;
+      }
+
+      const data = await response.json();
+      try {
+        const newRule = JSON.parse(data.text) as BusinessRule;
         
-        const jsonString = response.match(/\{.*\}/s)?.[0];
-        if (!jsonString) {
-            throw new Error("AI did not return a valid JSON object.");
-        }
-
-        let newRule = JSON.parse(jsonString) as BusinessRule | { error: string };
-
-        if ('error' in newRule) {
-            toast({ variant: "destructive", title: "AI Error", description: newRule.error });
-        } else {
-            newRule.id = `ai-${Date.now()}`;
-            onRulesChange([...appData.rules, newRule]);
-            setAiRuleText('');
-            toast({ title: "Rule Created", description: "The AI has successfully created a new rule." });
-        }
+        newRule.description = generateRuleDescription(newRule);
+        newRule.id = `ai-${Date.now()}`;
+        
+        onRulesChange([...appData.rules, newRule]);
+        setNaturalLanguageRule('');
+        toast.success("AI-powered rule added successfully!");
+      } catch (parseError) {
+        toast.error("AI returned an invalid rule format. Try rephrasing.");
+      }
     } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : "Failed to create rule with AI.";
-        toast({ variant: "destructive", title: "Error", description: errorMessage });
+      toast.error("Network error. Check your connection.");
     } finally {
-        setIsAiLoading(false);
+      setIsLoading(false);
     }
   };
 
   const handleAddRule = (rule: BusinessRule) => {
-    onRulesChange([...appData.rules, rule]);
+      onRulesChange([...appData.rules, rule]);
+  }
+
+  // ... (rest of the manual rule creation functions remain the same)
+  const handleAddCoRunRule = () => {
+    const taskIds = newCoRunTasks.split(',').map(t => t.trim()).filter(Boolean);
+    if (taskIds.length < 2) {
+      toast.error("Please enter at least two comma-separated Task IDs.");
+      return;
+    }
+    handleAddRule({
+      id: `corun-${Date.now()}`,
+      type: 'coRun',
+      taskIds,
+      description: `Tasks ${taskIds.join(', ')} must run together.`,
+    });
+    setNewCoRunTasks('');
   };
-  
+
+  const handleAddSlotRestrictionRule = () => {
+    const { targetGroup, groupTag, minCommonSlots } = newSlotRestriction;
+    if (!groupTag || !minCommonSlots || parseInt(minCommonSlots, 10) < 1) {
+        toast.error("Please provide a valid group tag and a minimum number of common slots (> 0).");
+        return;
+    }
+    handleAddRule({
+        id: `slot-${Date.now()}`,
+        type: 'slotRestriction',
+        targetGroup,
+        groupTag,
+        minCommonSlots: parseInt(minCommonSlots, 10),
+        description: `${targetGroup} '${groupTag}' must have at least ${minCommonSlots} common slots.`
+    });
+    setNewSlotRestriction({ targetGroup: 'WorkerGroup', groupTag: '', minCommonSlots: '' });
+  };
+
+  const handleAddLoadLimitRule = () => {
+      const { workerGroup, maxSlotsPerPhase } = newLoadLimit;
+      if (!workerGroup || !maxSlotsPerPhase || parseInt(maxSlotsPerPhase, 10) < 1) {
+          toast.error("Please provide a worker group and a valid max load per phase (> 0).");
+          return;
+      }
+      handleAddRule({
+          id: `load-${Date.now()}`,
+          type: 'loadLimit',
+          workerGroup,
+          maxSlotsPerPhase: parseInt(maxSlotsPerPhase, 10),
+          description: `Workers in group '${workerGroup}' have a load limit of ${maxSlotsPerPhase} per phase.`
+      });
+      setNewLoadLimit({ workerGroup: '', maxSlotsPerPhase: '' });
+  };
+
+  const handleAddPhaseWindowRule = () => {
+      const { taskId, allowedPhases } = newPhaseWindow;
+      const phases = allowedPhases.split(',').map(p => parseInt(p.trim())).filter(p => !isNaN(p) && p > 0);
+      if (!taskId || phases.length === 0) {
+          toast.error("Please provide a Task ID and at least one valid, comma-separated phase number.");
+          return;
+      }
+      handleAddRule({
+          id: `phase-${Date.now()}`,
+          type: 'phaseWindow',
+          taskId,
+          allowedPhases: phases,
+          description: `Task '${taskId}' can only run in phases: ${phases.join(', ')}.`
+      });
+      setNewPhaseWindow({ taskId: '', allowedPhases: '' });
+  };
+
   const handleRemoveRule = (ruleId: string) => {
     onRulesChange(appData.rules.filter(rule => rule.id !== ruleId));
   };
@@ -104,137 +193,95 @@ export function RuleBuilder({ appData, onRulesChange }: RuleBuilderProps) {
     <Card className="h-full">
       <CardHeader>
         <CardTitle>Business Rules</CardTitle>
-        <CardDescription>
-          Define business logic manually or use AI to convert natural language into rules.
-        </CardDescription>
+        <CardDescription>Define logic manually or use AI to convert natural language into rules.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
         {/* AI Rule Creator */}
         <div className="p-4 border rounded-lg bg-gradient-to-r from-blue-50 to-purple-50">
-            <label htmlFor="aiRuleText" className="text-sm font-medium text-slate-800 flex items-center gap-2">
-                <Wand2 className="h-5 w-5 text-purple-600" />
-                Create a rule with AI
-            </label>
-            <p className="text-xs text-slate-500 mb-2">
-                Example: "Make sure tasks T12 and T14 always run at the same time."
-            </p>
-            <div className="flex items-center gap-2">
-                <Input 
-                    id="aiRuleText"
-                    placeholder="Type a rule in plain English..."
-                    value={aiRuleText}
-                    onChange={(e) => setAiRuleText(e.target.value)}
-                    disabled={isAiLoading}
-                />
-                <Button onClick={handleAiRuleCreation} disabled={isAiLoading}>
-                    {isAiLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Create"}
-                </Button>
-            </div>
+          <label htmlFor="aiRuleText" className="text-sm font-medium text-slate-800 flex items-center gap-2">
+            <Wand2 className="h-5 w-5 text-purple-600" /> Create a rule with AI
+          </label>
+          <p className="text-xs text-slate-500 mb-2">e.g., "Tasks T12 and T14 must run at the same time."</p>
+          <div className="flex items-center gap-2">
+            <Input id="aiRuleText" placeholder="Type a rule in plain English..." value={naturalLanguageRule} onChange={(e) => setNaturalLanguageRule(e.target.value)} disabled={isLoading} onKeyDown={(e) => e.key === 'Enter' && handleAiRuleCreation()} />
+            <Button onClick={handleAiRuleCreation} disabled={isLoading}>
+              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Create"}
+            </Button>
+          </div>
         </div>
-        
+
         {/* Rule Display */}
         <div className="space-y-2">
-            <h4 className="font-medium">Active Rules</h4>
-            {appData.rules.length === 0 ? (
-                <p className="text-sm text-slate-500">No rules defined yet.</p>
-            ) : (
-                <ul className="space-y-2">
-                    {appData.rules.map((rule, index) => (
-                        <li key={rule.id || index} className="flex items-center justify-between p-2 bg-slate-50 rounded-md border">
-                            <span className="text-sm text-slate-800">{rule.description}</span>
-                             <Button variant="ghost" size="icon" onClick={() => handleRemoveRule(rule.id)} className="h-7 w-7">
-                                <Trash2 className="h-4 w-4 text-slate-500" />
-                            </Button>
-                        </li>
-                    ))}
-                </ul>
-            )}
+          <h4 className="font-medium">Active Rules</h4>
+          {appData.rules.length === 0 ? <p className="text-sm text-slate-500">No rules defined yet.</p> : (
+            <ul className="space-y-2">
+              {appData.rules.map((rule) => (
+                <li key={rule.id} className="flex items-center justify-between p-2 bg-slate-50 rounded-md border">
+                  <span className="text-sm text-slate-800">{rule.description}</span>
+                  <Button variant="ghost" size="icon" onClick={() => handleRemoveRule(rule.id)} className="h-7 w-7">
+                    <Trash2 className="h-4 w-4 text-slate-500" />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
 
         {/* Manual Rule Creation Accordion */}
         <div className="space-y-4">
-            <h4 className="font-medium">Add Manually</h4>
-            <Accordion type="single" collapsible className="w-full">
-              {/* Co-Run Rule */}
-              <AccordionItem value="item-1">
-                <AccordionTrigger>Co-run Tasks</AccordionTrigger>
-                <AccordionContent>
-                  <div className="p-2 space-y-2">
-                    <p className="text-xs text-slate-500">Specify Task IDs that must run concurrently.</p>
-                    <div className="flex items-center gap-2">
-                      <Input placeholder="e.g., T1, T5, T12" value={coRunTasks} onChange={(e) => setCoRunTasks(e.target.value)} />
-                      <Button onClick={() => {
-                        const taskIds = coRunTasks.split(',').map(t => t.trim()).filter(Boolean);
-                        if (taskIds.length < 2) { toast({ variant: 'destructive', title: 'Invalid Input', description: 'Please enter at least two Task IDs.' }); return; }
-                        handleAddRule({ id: `corun-${Date.now()}`, type: 'coRun', taskIds, description: `Tasks ${taskIds.join(', ')} must run together.` });
-                        setCoRunTasks('');
-                      }}>Add</Button>
-                    </div>
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-
-              {/* Load Limit Rule */}
-              <AccordionItem value="item-2">
-                <AccordionTrigger>Load Limit</AccordionTrigger>
-                <AccordionContent>
-                  <div className="p-2 space-y-2">
-                    <p className="text-xs text-slate-500">Set a max workload for a worker group.</p>
-                    <div className="grid grid-cols-2 gap-2">
-                      <Input placeholder="Worker Group (e.g., GroupA)" value={loadLimitGroup} onChange={(e) => setLoadLimitGroup(e.target.value)} />
-                      <Input type="number" placeholder="Max Load Per Phase" value={loadLimitMax} onChange={(e) => setLoadLimitMax(e.target.value)} />
-                    </div>
-                    <Button className="w-full mt-2" onClick={() => {
-                      if (!loadLimitGroup || !loadLimitMax) { toast({ variant: 'destructive', title: 'Invalid Input', description: 'Please fill out all fields.' }); return; }
-                      const maxSlots = parseInt(loadLimitMax, 10);
-                      handleAddRule({ id: `load-${Date.now()}`, type: 'loadLimit', workerGroup: loadLimitGroup, maxSlotsPerPhase: maxSlots, description: `Workers in ${loadLimitGroup} cannot exceed ${maxSlots} slots per phase.` });
-                      setLoadLimitGroup(''); setLoadLimitMax('');
-                    }}>Add</Button>
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-
-              {/* Phase Window Rule */}
-              <AccordionItem value="item-3">
-                <AccordionTrigger>Phase Window</AccordionTrigger>
-                <AccordionContent>
-                  <div className="p-2 space-y-2">
-                    <p className="text-xs text-slate-500">Restrict a task to specific phases.</p>
-                     <div className="grid grid-cols-2 gap-2">
-                      <Input placeholder="Task ID (e.g., T15)" value={phaseWindowTask} onChange={(e) => setPhaseWindowTask(e.target.value)} />
-                      <Input placeholder="Allowed Phases (e.g., 1,2,3)" value={phaseWindowPhases} onChange={(e) => setPhaseWindowPhases(e.target.value)} />
-                    </div>
-                    <Button className="w-full mt-2" onClick={() => {
-                      if (!phaseWindowTask || !phaseWindowPhases) { toast({ variant: 'destructive', title: 'Invalid Input', description: 'Please fill out all fields.' }); return; }
-                      const phases = phaseWindowPhases.split(',').map(p => parseInt(p.trim(), 10)).filter(p => !isNaN(p));
-                      handleAddRule({ id: `phase-${Date.now()}`, type: 'phaseWindow', taskId: phaseWindowTask, allowedPhases: phases, description: `Task ${phaseWindowTask} must run in phases: ${phases.join(', ')}.` });
-                      setPhaseWindowTask(''); setPhaseWindowPhases('');
-                    }}>Add</Button>
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-
-              {/* Slot Restriction Rule */}
-              <AccordionItem value="item-4">
-                <AccordionTrigger>Slot Restriction</AccordionTrigger>
-                <AccordionContent>
-                  <div className="p-2 space-y-2">
-                    <p className="text-xs text-slate-500">Ensure workers in a group have common availability.</p>
-                     <div className="grid grid-cols-2 gap-2">
-                      <Input placeholder="Worker Group (e.g., GroupB)" value={slotRestrictionGroup} onChange={(e) => setSlotRestrictionGroup(e.target.value)} />
-                      <Input type="number" placeholder="Min. Common Slots" value={slotRestrictionMin} onChange={(e) => setSlotRestrictionMin(e.target.value)} />
-                    </div>
-                    <Button className="w-full mt-2" onClick={() => {
-                      if (!slotRestrictionGroup || !slotRestrictionMin) { toast({ variant: 'destructive', title: 'Invalid Input', description: 'Please fill out all fields.' }); return; }
-                      const minSlots = parseInt(slotRestrictionMin, 10);
-                      handleAddRule({ id: `slot-${Date.now()}`, type: 'slotRestriction', groupTag: slotRestrictionGroup, minCommonSlots: minSlots, description: `Workers in ${slotRestrictionGroup} must have at least ${minSlots} common slots.` });
-                      setSlotRestrictionGroup(''); setSlotRestrictionMin('');
-                    }}>Add</Button>
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-
-            </Accordion>
+          <h4 className="font-medium">Add Manually</h4>
+          <Accordion type="single" collapsible className="w-full">
+            <AccordionItem value="co-run">
+              <AccordionTrigger>Co-run Rule</AccordionTrigger>
+              <AccordionContent className="p-4 border-t">
+                <p className="text-xs text-slate-500 mb-2">Specify Task IDs that must run concurrently.</p>
+                <div className="flex items-center gap-2">
+                  <Input placeholder="e.g., T1, T5, T12" value={newCoRunTasks} onChange={(e) => setNewCoRunTasks(e.target.value)} />
+                  <Button onClick={handleAddCoRunRule}><PlusCircle className="mr-2 h-4 w-4" /> Add</Button>
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+            <AccordionItem value="slot-restriction">
+              <AccordionTrigger>Slot Restriction Rule</AccordionTrigger>
+              <AccordionContent className="p-4 border-t space-y-3">
+                 <p className="text-xs text-slate-500">Ensure entities in a group have a minimum number of common available slots.</p>
+                 <div className="flex flex-col sm:flex-row items-center gap-2">
+                    <Select value={newSlotRestriction.targetGroup} onValuechange={(value: 'ClientGroup' | 'WorkerGroup') => setNewSlotRestriction({...newSlotRestriction, targetGroup: value})}>
+                        <SelectTrigger><SelectValue/></SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="ClientGroup">Client Group</SelectItem>
+                            <SelectItem value="WorkerGroup">Worker Group</SelectItem>
+                        </SelectContent>
+                    </Select>
+                    <Input placeholder="Group Tag (e.g., 'Sales')" value={newSlotRestriction.groupTag} onChange={(e) => setNewSlotRestriction({...newSlotRestriction, groupTag: e.target.value})} />
+                    <Input type="number" placeholder="Min Common Slots" value={newSlotRestriction.minCommonSlots} onChange={(e) => setNewSlotRestriction({...newSlotRestriction, minCommonSlots: e.target.value})} />
+                    <Button onClick={handleAddSlotRestrictionRule} className="w-full sm:w-auto"><PlusCircle className="mr-2 h-4 w-4" /> Add</Button>
+                 </div>
+              </AccordionContent>
+            </AccordionItem>
+            <AccordionItem value="load-limit">
+              <AccordionTrigger>Load Limit Rule</AccordionTrigger>
+              <AccordionContent className="p-4 border-t space-y-3">
+                <p className="text-xs text-slate-500">Set a maximum workload for a group of workers in any given phase.</p>
+                <div className="flex items-center gap-2">
+                    <Input placeholder="Worker Group Tag" value={newLoadLimit.workerGroup} onChange={(e) => setNewLoadLimit({...newLoadLimit, workerGroup: e.target.value})}/>
+                    <Input type="number" placeholder="Max Slots Per Phase" value={newLoadLimit.maxSlotsPerPhase} onChange={(e) => setNewLoadLimit({...newLoadLimit, maxSlotsPerPhase: e.target.value})}/>
+                    <Button onClick={handleAddLoadLimitRule}><PlusCircle className="mr-2 h-4 w-4" /> Add</Button>
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+            <AccordionItem value="phase-window">
+              <AccordionTrigger>Phase Window Rule</AccordionTrigger>
+              <AccordionContent className="p-4 border-t space-y-3">
+                <p className="text-xs text-slate-500">Restrict a specific task to a list of allowed phases.</p>
+                <div className="flex items-center gap-2">
+                    <Input placeholder="Task ID (e.g., T20)" value={newPhaseWindow.taskId} onChange={(e) => setNewPhaseWindow({...newPhaseWindow, taskId: e.target.value})}/>
+                    <Input placeholder="Allowed Phases (e.g., 1, 3, 5)" value={newPhaseWindow.allowedPhases} onChange={(e) => setNewPhaseWindow({...newPhaseWindow, allowedPhases: e.target.value})}/>
+                    <Button onClick={handleAddPhaseWindowRule}><PlusCircle className="mr-2 h-4 w-4" /> Add</Button>
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
         </div>
       </CardContent>
     </Card>

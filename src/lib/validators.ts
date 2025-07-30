@@ -1,6 +1,6 @@
 // src/lib/validators.ts
 
-import { AppData, Client, Task, ValidationError, Worker, CoRunRule } from "./types";
+import { AppData, Client, Task, ValidationError, Worker, CoRunRule, SlotRestrictionRule, LoadLimitRule, PhaseWindowRule } from "./types";
 
 /**
  * A wrapper function to run all validation checks.
@@ -19,13 +19,12 @@ export function validateAllData(data: AppData): ValidationError[] {
   errors.push(...validateSkillCoverage(data.tasks, data.workers));
   errors.push(...validateDuplicateIds(data));
 
-  // **NEW**: Rule-based validations
+  // Rule-based validations
   errors.push(...validateRules(data));
 
   return errors;
 }
 
-// --- NEW Validation Function for Business Rules ---
 
 /**
  * Validates data against the defined business rules.
@@ -34,50 +33,95 @@ export function validateAllData(data: AppData): ValidationError[] {
  */
 function validateRules(data: AppData): ValidationError[] {
     const errors: ValidationError[] = [];
-    const { clients, rules } = data;
+    const { clients, workers, tasks, rules } = data;
 
-    // 1. Check for Co-run rule violations
-    const coRunRules = rules.filter(rule => rule.type === 'coRun') as CoRunRule[];
-
-    coRunRules.forEach(rule => {
-        clients.forEach(client => {
-            const requestedTasks = new Set(client.RequestedTaskIDs);
-            
-            // Count how many of the rule's tasks this client has requested
-            const intersection = rule.taskIds.filter(taskId => requestedTasks.has(taskId));
-
-            // If the client requested some, but not all, of the co-run tasks, it's a violation.
-            if (intersection.length > 0 && intersection.length < rule.taskIds.length) {
-                errors.push({
-                    rowId: client.ClientID,
-                    field: 'RequestedTaskIDs',
-                    message: `Rule violation: This client requested some, but not all, of the required co-run tasks: ${rule.taskIds.join(', ')}.`,
-                    severity: 'warning',
+    rules.forEach(rule => {
+        // --- Co-run Rule Validation ---
+        if (rule.type === 'coRun') {
+            const coRunRule = rule as CoRunRule;
+            const taskIds = coRunRule.taskIds || (coRunRule as any).tasks;
+            if (Array.isArray(taskIds)) {
+                clients.forEach(client => {
+                    if (Array.isArray(client.RequestedTaskIDs)) {
+                        const requestedTasks = new Set(client.RequestedTaskIDs);
+                        const intersection = taskIds.filter(taskId => requestedTasks.has(taskId));
+                        if (intersection.length > 0 && intersection.length < taskIds.length) {
+                            errors.push({
+                                rowId: client.ClientID,
+                                field: 'RequestedTaskIDs',
+                                message: `Rule Violation: Client requested some, but not all, required co-run tasks: ${taskIds.join(', ')}.`,
+                                severity: 'warning',
+                            });
+                        }
+                    }
                 });
             }
-        });
-    });
+        }
 
-    // More rule validations can be added here...
+        // --- Slot Restriction Rule Validation (Now more robust) ---
+        if (rule.type === 'slotRestriction' || rule.type === 'slot' as any) {
+            const sr = rule as SlotRestrictionRule;
+            // Handle variations from AI response
+            const targetGroup = sr.targetGroup || 'WorkerGroup'; // Default to WorkerGroup if not specified
+            const groupTag = sr.groupTag || (rule as any).group;
+            const minCommonSlots = sr.minCommonSlots || (rule as any).minCount;
+
+            if (groupTag && minCommonSlots) {
+                const targetEntities = targetGroup === 'ClientGroup' ? clients.filter(c => c.GroupTag === groupTag) : workers.filter(w => w.WorkerGroup === groupTag);
+                if (targetEntities.length >= 2) {
+                    const allSlots = targetEntities.map(entity => new Set(entity.AvailableSlots || []));
+                    const commonSlots = allSlots.reduce((acc, currentSet) => new Set([...acc].filter(slot => currentSet.has(slot))));
+                    
+                    if (commonSlots.size < minCommonSlots) {
+                        targetEntities.forEach(entity => {
+                            errors.push({
+                                rowId: entity.id,
+                                field: 'AvailableSlots',
+                                message: `Rule Violation: Group '${groupTag}' has only ${commonSlots.size} common slots, but rule requires ${minCommonSlots}.`,
+                                severity: 'warning',
+                            });
+                        });
+                    }
+                }
+            }
+        }
+
+        // --- Load Limit Rule Validation ---
+        if (rule.type === 'loadLimit') {
+            const ll = rule as LoadLimitRule;
+            if (ll.workerGroup && workers.filter(w => w.WorkerGroup === ll.workerGroup).length === 0) {
+                console.warn(`LoadLimit rule for group '${ll.workerGroup}' targets no existing workers.`);
+            }
+        }
+
+        // --- Phase Window Rule Validation ---
+        if (rule.type === 'phaseWindow') {
+            const pw = rule as PhaseWindowRule;
+            const task = tasks.find(t => t.TaskID === pw.taskId);
+            if (task && task.PreferredPhases && task.PreferredPhases.length > 0) {
+                const intersection = task.PreferredPhases.filter(p => pw.allowedPhases.includes(p));
+                if (intersection.length === 0) {
+                    errors.push({
+                        rowId: task.TaskID,
+                        field: 'PreferredPhases',
+                        message: `Conflict: Task prefers [${task.PreferredPhases.join(', ')}] but rule restricts it to [${pw.allowedPhases.join(', ')}].`,
+                        severity: 'error',
+                    });
+                }
+            }
+        }
+    });
 
     return errors;
 }
 
 
 // --- Existing Validation Functions ---
-
-/**
- * Validates client data.
- * @param {Client[]} clients - Array of clients.
- * @param {Task[]} tasks - Array of tasks, for cross-referencing.
- * @returns {ValidationError[]} An array of validation errors.
- */
 function validateClients(clients: Client[], tasks: Task[]): ValidationError[] {
   const errors: ValidationError[] = [];
   const taskIds = new Set(tasks.map(t => t.TaskID));
 
   clients.forEach(client => {
-    // Check for out-of-range PriorityLevel
     if (client.PriorityLevel < 1 || client.PriorityLevel > 5) {
       errors.push({
         rowId: client.ClientID,
@@ -87,7 +131,6 @@ function validateClients(clients: Client[], tasks: Task[]): ValidationError[] {
       });
     }
 
-    // Check for broken JSON in AttributesJSON
     if (client.AttributesJSON && (client.AttributesJSON as any).error) {
         errors.push({
             rowId: client.ClientID,
@@ -97,14 +140,13 @@ function validateClients(clients: Client[], tasks: Task[]): ValidationError[] {
         });
     }
 
-    // Check if requested tasks exist
     if (Array.isArray(client.RequestedTaskIDs)) {
         client.RequestedTaskIDs.forEach(reqTaskId => {
             if (reqTaskId && !taskIds.has(reqTaskId)) {
                 errors.push({
                     rowId: client.ClientID,
                     field: 'RequestedTaskIDs',
-                    message: `Requested TaskID "${reqTaskId}" does not exist in the tasks list.`,
+                    message: `Requested TaskID "${reqTaskId}" does not exist.`,
                     severity: 'warning',
                 });
             }
@@ -115,11 +157,6 @@ function validateClients(clients: Client[], tasks: Task[]): ValidationError[] {
   return errors;
 }
 
-/**
- * Validates worker data.
- * @param {Worker[]} workers - Array of workers.
- * @returns {ValidationError[]} An array of validation errors.
- */
 function validateWorkers(workers: Worker[]): ValidationError[] {
     const errors: ValidationError[] = [];
     workers.forEach(worker => {
@@ -131,7 +168,7 @@ function validateWorkers(workers: Worker[]): ValidationError[] {
                 severity: 'error',
             });
         }
-        if (worker.Skills.length === 0) {
+        if (!worker.Skills || worker.Skills.length === 0) {
             errors.push({
                 rowId: worker.WorkerID,
                 field: 'Skills',
@@ -143,11 +180,6 @@ function validateWorkers(workers: Worker[]): ValidationError[] {
     return errors;
 }
 
-/**
- * Validates task data.
- * @param {Task[]} tasks - Array of tasks.
- * @returns {ValidationError[]} An array of validation errors.
- */
 function validateTasks(tasks: Task[]): ValidationError[] {
     const errors: ValidationError[] = [];
     tasks.forEach(task => {
@@ -163,12 +195,6 @@ function validateTasks(tasks: Task[]): ValidationError[] {
     return errors;
 }
 
-/**
- * Validates that every required skill for a task is provided by at least one worker.
- * @param {Task[]} tasks - Array of tasks.
- * @param {Worker[]} workers - Array of workers.
- * @returns {ValidationError[]} An array of validation errors.
- */
 function validateSkillCoverage(tasks: Task[], workers: Worker[]): ValidationError[] {
     const errors: ValidationError[] = [];
     if (workers.length === 0 || tasks.length === 0) return [];
@@ -178,7 +204,7 @@ function validateSkillCoverage(tasks: Task[], workers: Worker[]): ValidationErro
     tasks.forEach(task => {
         if (Array.isArray(task.RequiredSkills)) {
             task.RequiredSkills.forEach(requiredSkill => {
-                if (!allWorkerSkills.has(requiredSkill)) {
+                if (requiredSkill && !allWorkerSkills.has(requiredSkill)) {
                     errors.push({
                         rowId: task.TaskID,
                         field: 'RequiredSkills',
@@ -193,11 +219,6 @@ function validateSkillCoverage(tasks: Task[], workers: Worker[]): ValidationErro
     return errors;
 }
 
-/**
- * Checks for duplicate IDs across all entities.
- * @param {AppData} data - The entire application's data state.
- * @returns {ValidationError[]} An array of validation errors.
- */
 function validateDuplicateIds(data: AppData): ValidationError[] {
     const errors: ValidationError[] = [];
     const clientIds = new Set<string>();
