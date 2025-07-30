@@ -8,19 +8,20 @@ export interface ValidationError {
   severity: 'error' | 'warning';
 }
 
-// --- NEW: Represents an AI-suggested fix for a validation error ---
+// Represents an AI-suggested fix for a validation error
 export interface Correction {
   rowId: string | number;
   entityType: EntityType;
   field: string;
-  newValue: string | number | any[];
-  reason: string; // AI's explanation for the fix
+  newValue: string | number | string[] | number[];
+  reason: string;
+  correctionType?: 'REPLACE' | 'APPEND'; // FIX: Added the missing property
 }
 
 // Base interface for any data entity row.
 export interface DataRow {
   id: string | number;
-  [key: string]: any;
+  [key: string]: string | number | string[] | number[] | Record<string, unknown> | undefined | Omit<ValidationError, 'rowId'>[];
   errors?: Omit<ValidationError, 'rowId'>[];
 }
 
@@ -31,7 +32,7 @@ export interface Client extends DataRow {
   PriorityLevel: number;
   RequestedTaskIDs: string[];
   GroupTag: string;
-  AttributesJSON: Record<string, any>;
+  AttributesJSON: Record<string, unknown>;
 }
 
 export interface Worker extends DataRow {
@@ -53,6 +54,7 @@ export interface Task extends DataRow {
   PreferredPhases: number[];
   MaxConcurrent: number;
 }
+
 
 // --- Rule and Configuration Interfaces ---
 export type RuleType = 'coRun' | 'slotRestriction' | 'loadLimit' | 'phaseWindow' | 'patternMatch';
@@ -91,14 +93,14 @@ export interface PatternMatchRule extends BaseRule {
     type: 'patternMatch';
     pattern: string;
     ruleTemplate: string;
-    parameters: Record<string, any>;
+    parameters: Record<string, unknown>;
 }
 
 export type BusinessRule = CoRunRule | SlotRestrictionRule | LoadLimitRule | PhaseWindowRule | PatternMatchRule;
 
 export interface ExportConfig {
   rules: BusinessRule[];
-  prioritization: { [key: string]: number; };
+  prioritization: Record<string, number>;
 }
 
 export interface AppData {
@@ -112,5 +114,5 @@ export interface AppData {
 export type EntityType = 'clients' | 'workers' | 'tasks';
 
 export interface Rule extends BaseRule {
-    [key: string]: any;
+    [key: string]: unknown;
 }
