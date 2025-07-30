@@ -15,13 +15,15 @@ export interface Correction {
   field: string;
   newValue: string | number | string[] | number[];
   reason: string;
-  correctionType?: 'REPLACE' | 'APPEND'; // FIX: Added the missing property
+  correctionType?: 'REPLACE' | 'APPEND';
 }
 
 // Base interface for any data entity row.
 export interface DataRow {
   id: string | number;
-  [key: string]: string | number | string[] | number[] | Record<string, unknown> | undefined | Omit<ValidationError, 'rowId'>[];
+  // FIX: Made the array type a union of primitives to solve the Set constructor error.
+  // Also removed the incorrect inclusion of the ValidationError type in the index signature.
+  [key: string]: string | number | (string | number)[] | Record<string, unknown> | undefined;
   errors?: Omit<ValidationError, 'rowId'>[];
 }
 
