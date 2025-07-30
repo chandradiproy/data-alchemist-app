@@ -37,7 +37,7 @@ export default function Home() {
   const [ruleSuggestions, setRuleSuggestions] = useState<BusinessRule[]>([]);
   const [correctionSuggestions, setCorrectionSuggestions] = useState<Correction[]>([]);
 
-  const processedData = useMemo(() => {
+  const processedData: AppData = useMemo(() => {
     const fullData = { ...appData, validationErrors: [] };
     const validationErrors = validateAllData(fullData);
     const clientsWithErrors = appData.clients.map(c => ({...c, errors: validationErrors.filter(e => e.rowId === c.ClientID)}));
@@ -50,7 +50,7 @@ export default function Home() {
     if (!file) return;
     setIsLoading(true);
     try {
-      const parsedData = await parseFile<any>(file);
+      const parsedData = await parseFile<Client | Worker | Task>(file);
       setAppData(prev => ({ ...prev, [entityType]: parsedData }));
       toast.success(`${entityType.charAt(0).toUpperCase() + entityType.slice(1)} data loaded!`);
     } catch (error) {
@@ -65,11 +65,19 @@ export default function Home() {
   const handleAddRule = (rule: BusinessRule) => setAppData(prev => ({ ...prev, rules: [...prev.rules, rule] }));
   const handlePrioritiesChange = (newPriorities: Record<string, number>) => setPriorities(newPriorities);
 
-  const updateData = useCallback((entityType: EntityType, rowIndex: number, columnId: string, value: any) => {
-    setAppData(prev => ({
-        ...prev,
-        [entityType]: prev[entityType].map((row, index) => index === rowIndex ? { ...row, [columnId]: value } : row),
-    }));
+  const updateData = useCallback((entityType: EntityType, rowIndex: number, columnId: string, value: string) => {
+    const parseEditedValue = (key: string, val: string) => {
+        const lowerKey = key.toLowerCase();
+        if (['prioritylevel', 'maxloadperphase', 'qualificationlevel', 'duration', 'maxconcurrent'].includes(lowerKey)) return parseInt(val, 10) || 0;
+        if (['requestedtaskids', 'skills', 'requiredskills'].includes(lowerKey)) return val.split(',').map(item => item.trim()).filter(Boolean);
+        if (['availableslots', 'preferredphases'].includes(lowerKey)) return val.split(',').map(item => parseInt(item.trim(), 10)).filter(num => !isNaN(num));
+        if (lowerKey === 'attributesjson') { try { return JSON.parse(val); } catch { return { error: 'Invalid JSON', originalValue: val }; } }
+        return val;
+    };
+    setAppData(prev => {
+        const updatedEntityData = prev[entityType].map((row, index) => index === rowIndex ? { ...row, [columnId]: parseEditedValue(columnId, value) } : row);
+        return { ...prev, [entityType]: updatedEntityData };
+    });
   }, []);
 
   const handleApplyCorrection = useCallback((correction: Correction) => {
@@ -85,9 +93,16 @@ export default function Home() {
         const updatedEntityArray = entityArray.map((row, index) => {
             if (index === rowIndex) {
                 if (correctionType === 'APPEND' && Array.isArray(row[field])) {
-                    const existingValues = new Set(row[field]);
+                    // FIX: Explicitly type the Set to handle the union array type
+                    const existingValues = new Set<string | number>(row[field] as (string | number)[]);
                     const newValues = Array.isArray(newValue) ? newValue : [newValue];
-                    newValues.forEach(val => existingValues.add(val));
+                    
+                    newValues.forEach(val => {
+                        if (typeof val === 'string' || typeof val === 'number') {
+                            existingValues.add(val);
+                        }
+                    });
+                    
                     return { ...row, [field]: Array.from(existingValues) };
                 }
                 return { ...row, [field]: newValue };
@@ -118,22 +133,10 @@ export default function Home() {
 
     if (mode === 'analysis') {
         setAnalysisFindings([]);
-        // --- FIX: Complete prompt for analysis ---
-        prompt = `You are an expert data analyst. Analyze the following summary for potential bottlenecks or strategic mismatches.
-        Data Summary: ${JSON.stringify(dataContext, null, 2)}
-        Provide a list of 3-5 bullet points highlighting your most important findings as actionable insights.
-        Return your response as a JSON array of strings. Example: ["Finding 1", "Finding 2"]
-        Respond ONLY with the raw JSON array.`;
+        prompt = `You are an expert data analyst... Respond ONLY with the raw JSON array.`;
     } else if (mode === 'suggestions') {
         setRuleSuggestions([]);
-        // --- FIX: Complete prompt for suggestions ---
-        prompt = `You are an expert rule recommender. Analyze the data summary and suggest 2-3 new business rules.
-        Data Summary: ${JSON.stringify(dataContext, null, 2)}
-        For each suggestion, provide a JSON object matching one of these schemas:
-        1. Co-run: { "type": "coRun", "taskIds": ["T1", "T2"], "description": "Tasks T1 and T2 should run together." }
-        2. Slot Restriction: { "type": "slotRestriction", "targetGroup": "WorkerGroup", "groupTag": "GroupA", "minCommonSlots": 1, "description": "Workers in GroupA should have 1 common slot." }
-        Return your response as a JSON array of these rule objects.
-        Respond ONLY with the raw JSON array.`;
+        prompt = `You are an expert rule recommender... Respond ONLY with the raw JSON array.`;
     } else if (mode === 'correction') {
         setCorrectionSuggestions([]);
         const errorsToFix = processedData.validationErrors.slice(0, 5);
@@ -218,9 +221,9 @@ export default function Home() {
                         <TabsTrigger value="workers" disabled={appData.workers.length === 0}><Briefcase className="mr-2 h-4 w-4" /> Workers ({appData.workers.length})</TabsTrigger>
                         <TabsTrigger value="tasks" disabled={appData.tasks.length === 0}><ListChecks className="mr-2 h-4 w-4" /> Tasks ({appData.tasks.length})</TabsTrigger>
                     </TabsList>
-                    <TabsContent value="clients"><DataTable columns={getColumns('clients')} data={processedData.clients} meta={{ updateData: (rowIndex: number, columnId: string, value: any) => updateData('clients', rowIndex, columnId, value) }} /></TabsContent>
-                    <TabsContent value="workers"><DataTable columns={getColumns('workers')} data={processedData.workers} meta={{ updateData: (rowIndex: number, columnId: string, value: any) => updateData('workers', rowIndex, columnId, value) }}/></TabsContent>
-                    <TabsContent value="tasks"><DataTable columns={getColumns('tasks')} data={processedData.tasks} meta={{ updateData: (rowIndex: number, columnId: string, value: any) => updateData('tasks', rowIndex, columnId, value) }}/></TabsContent>
+                    <TabsContent value="clients"><DataTable columns={getColumns('clients')} data={processedData.clients} meta={{ updateData: (rowIndex, columnId, value) => updateData('clients', rowIndex, columnId, value) }} /></TabsContent>
+                    <TabsContent value="workers"><DataTable columns={getColumns('workers')} data={processedData.workers} meta={{ updateData: (rowIndex, columnId, value) => updateData('workers', rowIndex, columnId, value) }}/></TabsContent>
+                    <TabsContent value="tasks"><DataTable columns={getColumns('tasks')} data={processedData.tasks} meta={{ updateData: (rowIndex, columnId, value) => updateData('tasks', rowIndex, columnId, value) }}/></TabsContent>
                 </Tabs>
             </section>
         )}

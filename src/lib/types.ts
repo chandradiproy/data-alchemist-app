@@ -18,12 +18,17 @@ export interface Correction {
   correctionType?: 'REPLACE' | 'APPEND';
 }
 
+// --- FIX: Added a specific type for invalid JSON objects ---
+export interface InvalidJson {
+  error: string;
+  originalValue: string;
+}
+
 // Base interface for any data entity row.
 export interface DataRow {
   id: string | number;
-  // FIX: Made the array type a union of primitives to solve the Set constructor error.
-  // Also removed the incorrect inclusion of the ValidationError type in the index signature.
-  [key: string]: string | number | (string | number)[] | Record<string, unknown> | undefined;
+  // FIX: Included the InvalidJson type in the index signature.
+  [key: string]: string | number | (string | number)[] | Record<string, unknown> | InvalidJson | Omit<ValidationError, 'rowId'>[] | undefined;
   errors?: Omit<ValidationError, 'rowId'>[];
 }
 
@@ -34,7 +39,7 @@ export interface Client extends DataRow {
   PriorityLevel: number;
   RequestedTaskIDs: string[];
   GroupTag: string;
-  AttributesJSON: Record<string, unknown>;
+  AttributesJSON: Record<string, unknown> | InvalidJson;
 }
 
 export interface Worker extends DataRow {
